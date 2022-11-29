@@ -24,8 +24,6 @@ for (i in 1:150){
     if (vect3[i] == 1){
       iris_MCAR$Petal.Width[i] <- NA
     }
-    if (vect3[i] == 1){
-      iris_MCAR$Petal.Width[i] <- NA
     }
     if (vect4[i] == 1){
       iris_MCAR$Petal.Length[i] <- NA
@@ -38,7 +36,7 @@ for (j in 1:4){
   vect <- which(is.na(iris_MCAR[j]), arr.ind = TRUE)[, 1]
   iris_MCAR[vect, j] <- moy
 }
-# Des AFD en veut tu en voilà
+# Des ANOVA en veux tu, en voilà
 library(DiscriMiner)
 discPower(iris[, 1:4], iris$Species)
 discPower(iris_MCAR[, 1:4], iris_MCAR$Species)
