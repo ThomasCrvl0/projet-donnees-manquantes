@@ -1,0 +1,215 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# I - Fonctions de génération de données manquantes
+
+## MAR
+
+On pose le vecteur dépendance qui est en fait les coefficient de la combinaison linéaire des variables qui expliquent le mieux l'absence de la variable MAR, si on a un dataframe de taille i\*j on aura le vecteur dépendance de taille j car on ajoute un intercept. On pose un exemple de d?pendance arbitraire que l'on va utiliser sur le df iris dependance=c(3.2,4.1,2.658,0) on calcule ensuite le produit matriciel: (1:DF[,-j])%\*% dépendance et en fonction de exp(x)/(1+exp(x)) ou x est cette combinaison linéaire on paramètrera la probabilité que df[i,j] soit une donnée manquante.
+
+```{r}
+tableau_MAR<-function(dtframe,var_exp,var_MAR,dep){
+  dtf<-dtframe
+  df<-cbind(matrix(1,length(dtf[,1]),1),dtframe[,var_exp])
+  qtt<-as.matrix(df)%*%as.matrix(dep) ##calcul de la variable d'intérêt
+  n<-length(df[,1])
+  M<-rep(0,n)
+  vec_pro<-rep(0,n)
+  for (i in 1:n){
+    vec_pro[i]<-exp(qtt[i])/(1+exp(qtt[i]))
+    ## calcul du quantile emprique de
+    ##la variable d'intérêt de l'individu i
+    M[i]<-rbinom(n=1,size=1,prob = vec_pro[i])##tirage au sort du manquemant de x(i,j)
+    ##par une loi binomiale paramétrée par le quantile de la variable d'intérêt.
+    if (M[i]==1){dtf[i,var_MAR]<-NA}
+  }
+  return(dtf)
+}
+```
+
+## MNAR
+
+```{r}
+tableau_MNAR<-function(df,var_MNAR,dep=c(1,1)){
+  dtf<-tableau_MAR(df,var_MNAR,var_MNAR,dep)
+  return(dtf)
+}
+```
+
+## MCAR
+
+```{r}
+MCAR<-function(df,p=0.1){
+  les_malchanceux_disparues<-rbinom(dim(df)[1]*dim(df)[2],prob = p,size = 1 )
+  les_malchanceux_disparues<-matrix(data = les_malchanceux_disparues,
+                                    nrow = dim(df)[1],
+                                    ncol = dim(df)[2])
+  df[les_malchanceux_disparues==1]<-NA
+  return(df)
+}
+```
+
+# II - Fonctions d'imputations classiques
+
+Dans cette partie, nous avons codé les fonctions d'imputations dites classiques, à savoir celles d'imputations par moyenne et par régression sur colonne complète.
+
+## Fonction d'imputation par moyenne
+
+```{r}
+# Complétion par la méthode d'imputation par la moyenne
+input_moy <- function(df){
+  for (j in 1:ncol(df)){
+    vect <- which(is.na(df[j]), arr.ind = TRUE)[, 1]
+    if(length(vect) != 0){
+      moy <- mean(df[, j], na.rm = TRUE)
+      df[vect, j] <- moy
+      }
+  }
+  return(df)
+}
+```
+
+## Fonction d'imputation par régression
+
+```{r}
+# Méthode de régression
+input_reg <- function(df, col_na, col_reg){
+  # col_na sont les colonnes avec des NA
+  # col_reg sont les colonnes sur lesquelles on régresse, PAS DE NA
+  for(j in col_na){
+    # Le vecteur des indices des données manquantes
+    vect <- which(is.na(df[j]), arr.ind = TRUE)[,1]
+    # Les vecteurs des régresseurs X et de la variable à expliquer Y aux indices où il n'y a pas de NA dans Y
+    df_temp <- as.data.frame(cbind(df[-vect, j], df[-vect, col_reg]))
+    # On régresse Y sur X
+    model <- lm(as.matrix(df_temp[1]) ~ as.matrix(df_temp[,2:ncol(df_temp)]), data = df_temp)
+    # On ajoute l'intercept
+    new_data <- cbind(rep(1, length(vect)), df[vect, col_reg])
+    new_data <- as.matrix(new_data)
+    # On prédit les NA de Y avec le modèle supra
+    # Predict ne marche pas, problèmes avec le nom des colonnes, donc \hat{Y} = X*\hat{\beta}
+    df[vect, j] <- new_data%*%(as.vector(model$coefficients))
+  }
+  return(df)
+  
+}
+```
+
+# III - Méthode par maximum de vraisemblance
+
+Pour la méthode basée sur le maximum de vraisemblance, nous allons ici utiliser la librairie "missMethods", qui contient une implémentation de l'algorithme EM.
+
+```{r}
+library(missMethods)
+```
+
+# IV - Exemples sur un tableau MCAR
+
+### Préambule
+
+Notre but sera ici de comparer l'impact des différentes méthodes d'imputations de données entre elles. Pour ce faire, nous allons générer un tableau selon le schéma MCAR, puis compléter ce tableau avec trois les méthodes d'imputations : celles par moyenne, par régression et par maximum de vraisemblance. Ensuite, nous allons effectuer des régressions linéaires, afin d'expliquer la qualité du vin en fonction de variables qui auront subi une perte de données. Nous comparerons ces régressions avec celle du tableau originel. Nous commençons par la plus basique des méthodes de modélisation afin de mettre en exergue la non pertinence de certaines méthodes d'imputations.
+
+On considère ici un jeu de données sur les vins de Porto, obtenu sur Kaggle (<https://www.kaggle.com/datasets/shelvigarg/wine-quality-dataset>).
+
+Notre but étant de comparer l'analyse du tableau complet avec un tableau non complet, on se permet ici et uniquement ici de retirer les valeurs manquantes. (C'est cocasse)
+
+```{r}
+porto <- na.omit(read.csv("porto.csv")) # na.omit pour le fun
+# On enlève les variables de type et de qualité
+quality <- porto$quality
+porto <- porto[c(-1, -13)]
+```
+
+Continuons en générant un tableau MCAR, tout en gardant quelques colonnes complète pour la méthode de régression. Nous choisissons de retirer approximativement 40% des données.
+
+```{r}
+# On génère un tableau MCAR
+porto_MCAR<- MCAR(porto, p = 0.45)
+# On remet des colonnes sans NA, pour la méthode de régression
+porto_MCAR$pH <- porto$alcohol
+porto_MCAR$citric.acid <- porto$citric.acid
+porto_MCAR$volatile.acidity<- porto$volatile.acidity
+```
+
+On impute les données suivant les diverses méthodes :
+
+```{r}
+# Méthode de la moyenne
+porto_MCAR.moy <- input_moy(porto_MCAR)
+
+# Méthode de régression
+# exemple où les colonnes à NA sont imputées via un lm sur les colonne 2, 3 et 9
+porto_MCAR.reg <- input_reg(porto_MCAR, (1:11)[-c(2, 3, 9)], c(2, 3, 9))
+
+# Méthode maximum de vraisemblance : algorithme EM
+porto_MCAR.em <- impute_EM(porto_MCAR)
+```
+
+```{r}
+# On remet la quality
+porto$quality <- quality
+porto_MCAR.moy$quality <- quality
+porto_MCAR.reg$quality <- quality
+porto_MCAR.em$quality <- quality
+```
+
+Pour finir, nous effectuons nos régressions. Nous allons essayer de déterminer si l'alcool et le sucre ont une influence sur la qualité du vin.
+
+```{r}
+# aov sur le df originel
+lm_df_ori <- lm(porto$quality~porto$alcohol+
+                  porto$residual.sugar)
+# aov sur celui complété par méthode de la moyenne
+lm_df_moy <- lm(porto_MCAR.moy$quality~porto_MCAR.moy$alcohol+
+                   porto_MCAR.moy$residual.sugar)
+# aov sur celui complété par méthode de régression
+lm_df_reg <- lm(porto_MCAR.reg$quality~porto_MCAR.reg$alcohol+
+                   porto_MCAR.reg$residual.sugar)
+
+# aov sur celui complété par méthode de maximum de vraisemblance
+lm_df_em <- lm(porto_MCAR.em$quality~porto_MCAR.em$alcohol+
+                   porto_MCAR.em$residual.sugar)
+
+```
+
+### Régression sur le tableau originel
+
+```{r}
+summary(lm_df_ori)
+```
+
+Le modèle n'est originellement pas très explicatif, le $R^2_a$ est de 0.2154, ce qui est plutôt faible, mais cela n'a rien de très étonnant. Retenons la valeur de la F-statistic (881.2) et le fait que les tests de Student soient significatifs.
+
+### Régression sur le tableau avec imputation par moyenne
+
+```{r}
+summary(lm_df_moy)
+```
+
+Cette modélisation donne des résultats tout à fait différents que la précédente :
+
+-   le $R^2_a$ est réduit de moitié,
+
+-   la statistique de Fischer est fortement impactée,
+
+-   les coefficients estimés ne sont plus les mêmes,
+
+-   la p-value du test de Student sur le dernier coefficient est $10^{13}$ fois plus importante !
+
+Les conclusions finales changent, le modèle perd grandement en significativité. Cette méthode d'imputation échoue à conserver le caractère explicatif du modèle.
+
+### Régression sur le tableau avec imputation par régression
+
+```{r}
+summary(lm_df_reg)
+```
+
+Nous retrouvons ici globalement les mêmes résultats que lors de la régression sur le tableau originel; tant dans les coefficients estimés, que sur les statistiques de test et la p-value. L'impact de la complétion des donnés est mineur, les conclusions ne changent pas; sur cet exemple d'analyse ci, la méthode d'imputation par régression est efficace.
+
+### Régression sur le tableau avec imputation par EM
+
+```{r}
+summary(lm_df_em)
+```
